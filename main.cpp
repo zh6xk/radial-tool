@@ -4,6 +4,7 @@
 #include <initguid.h>
 #include <windows.h>
 #include <windowsx.h>
+#include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -21,6 +22,121 @@
 #include <string>
 #include <sstream>
 
+struct WheelItem {
+    std::wstring label;
+    std::wstring target; // Action name atau URL
+};
+
+// Global Wheel Pages (Dinamis dari config)
+std::vector<WheelItem> g_page0Items; // Media Tools
+std::vector<WheelItem> g_page1Items; // Web Launcher
+HWND g_hWndSettings = NULL;
+
+// Helper path konfigurasi di %APPDATA%\RadialTool\config.ini
+std::wstring GetConfigFilePath() {
+    WCHAR appData[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appData))) {
+        std::wstring dir = std::wstring(appData) + L"\\RadialTool";
+        CreateDirectoryW(dir.c_str(), NULL);
+        return dir + L"\\config.ini";
+    }
+    return L"config.ini";
+}
+
+void LoadDefaultWheelItems() {
+    g_page0Items.clear();
+    g_page0Items.push_back({ L"Format Image", L"action:format" });
+    g_page0Items.push_back({ L"Image to PDF", L"action:pdf" });
+    g_page0Items.push_back({ L"Screenshot", L"action:screenshot" });
+    g_page0Items.push_back({ L"Compress", L"action:compress" });
+    g_page0Items.push_back({ L"PDF Split", L"action:split" });
+
+    g_page1Items.clear();
+    g_page1Items.push_back({ L"YouTube", L"https://www.youtube.com" });
+    g_page1Items.push_back({ L"Netflix", L"https://www.netflix.com" });
+    g_page1Items.push_back({ L"GitHub", L"https://github.com" });
+    g_page1Items.push_back({ L"ChatGPT", L"https://chatgpt.com" });
+    g_page1Items.push_back({ L"Google", L"https://www.google.com" });
+}
+
+// Forward declaration logging
+void WriteLog(const wchar_t* format, ...);
+
+void SaveWheelConfig() {
+    std::wstring path = GetConfigFilePath();
+    FILE* fp = _wfopen(path.c_str(), L"w, ccs=UTF-8");
+    if (!fp) return;
+
+    fwprintf(fp, L"[PAGE0]\n");
+    fwprintf(fp, L"Count=%d\n", (int)g_page0Items.size());
+    for (size_t i = 0; i < g_page0Items.size(); i++) {
+        fwprintf(fp, L"Label_%d=%ls\n", (int)i, g_page0Items[i].label.c_str());
+        fwprintf(fp, L"Target_%d=%ls\n", (int)i, g_page0Items[i].target.c_str());
+    }
+
+    fwprintf(fp, L"\n[PAGE1]\n");
+    fwprintf(fp, L"Count=%d\n", (int)g_page1Items.size());
+    for (size_t i = 0; i < g_page1Items.size(); i++) {
+        fwprintf(fp, L"Label_%d=%ls\n", (int)i, g_page1Items[i].label.c_str());
+        fwprintf(fp, L"Target_%d=%ls\n", (int)i, g_page1Items[i].target.c_str());
+    }
+    fclose(fp);
+    WriteLog(L"SaveWheelConfig: saved to %ls", path.c_str());
+}
+
+void LoadWheelConfig() {
+    std::wstring path = GetConfigFilePath();
+    DWORD attrib = GetFileAttributesW(path.c_str());
+    if (attrib == INVALID_FILE_ATTRIBUTES) {
+        LoadDefaultWheelItems();
+        SaveWheelConfig();
+        return;
+    }
+
+    WCHAR valBuf[512];
+    int count0 = GetPrivateProfileIntW(L"PAGE0", L"Count", 0, path.c_str());
+    if (count0 <= 0 || count0 > 5) {
+        LoadDefaultWheelItems();
+        SaveWheelConfig();
+        return;
+    }
+
+    g_page0Items.clear();
+    for (int i = 0; i < count0; i++) {
+        WCHAR keyLabel[32], keyTarget[32];
+        swprintf(keyLabel, 32, L"Label_%d", i);
+        swprintf(keyTarget, 32, L"Target_%d", i);
+
+        GetPrivateProfileStringW(L"PAGE0", keyLabel, L"", valBuf, 512, path.c_str());
+        std::wstring lbl = valBuf;
+        GetPrivateProfileStringW(L"PAGE0", keyTarget, L"", valBuf, 512, path.c_str());
+        std::wstring tgt = valBuf;
+        g_page0Items.push_back({ lbl, tgt });
+    }
+
+    int count1 = GetPrivateProfileIntW(L"PAGE1", L"Count", 0, path.c_str());
+    g_page1Items.clear();
+    if (count1 > 0 && count1 <= 5) {
+        for (int i = 0; i < count1; i++) {
+            WCHAR keyLabel[32], keyTarget[32];
+            swprintf(keyLabel, 32, L"Label_%d", i);
+            swprintf(keyTarget, 32, L"Target_%d", i);
+
+            GetPrivateProfileStringW(L"PAGE1", keyLabel, L"", valBuf, 512, path.c_str());
+            std::wstring lbl = valBuf;
+            GetPrivateProfileStringW(L"PAGE1", keyTarget, L"", valBuf, 512, path.c_str());
+            std::wstring tgt = valBuf;
+            g_page1Items.push_back({ lbl, tgt });
+        }
+    } else {
+        g_page1Items.push_back({ L"YouTube", L"https://www.youtube.com" });
+        g_page1Items.push_back({ L"Netflix", L"https://www.netflix.com" });
+        g_page1Items.push_back({ L"GitHub", L"https://github.com" });
+        g_page1Items.push_back({ L"ChatGPT", L"https://chatgpt.com" });
+        g_page1Items.push_back({ L"Google", L"https://www.google.com" });
+    }
+}
+
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -35,6 +151,7 @@ using namespace Gdiplus;
 #define WM_APP_EXECUTEWHEEL (WM_APP + 3)
 #define ID_TRAY_EXIT 1001
 #define ID_TRAY_ABOUT 1002
+#define ID_TRAY_SETTINGS 1003
 
 const int WHEEL_SIZE = 340;
 const float R_OUTER = 150.0f;
@@ -1109,14 +1226,22 @@ void RenderWheel(HWND hWnd) {
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
 
-    const wchar_t** items = NULL;
-    int count = 0;
+    // Ambil daftar items dinamis berdasarkan state dan page
+    std::vector<std::wstring> currentLabels;
     if (g_state == STATE_MAIN) {
-        if (g_mainPage == 0) { items = PAGE0_ITEMS; count = PAGE0_COUNT; }
-        else if (g_mainPage == 1) { items = PAGE1_ITEMS; count = PAGE1_COUNT; }
+        if (g_mainPage == 0) {
+            for (auto& it : g_page0Items) currentLabels.push_back(it.label);
+        } else if (g_mainPage == 1) {
+            for (auto& it : g_page1Items) currentLabels.push_back(it.label);
+        }
+    } else if (g_state == STATE_FORMAT) {
+        for (int i = 0; i < FORMAT_COUNT; i++) currentLabels.push_back(FORMAT_ITEMS[i]);
+    } else if (g_state == STATE_SCREENSHOT) {
+        for (int i = 0; i < SNIP_COUNT; i++) currentLabels.push_back(SNIP_ITEMS[i]);
     }
-    else if (g_state == STATE_FORMAT) { items = FORMAT_ITEMS; count = FORMAT_COUNT; }
-    else if (g_state == STATE_SCREENSHOT) { items = SNIP_ITEMS; count = SNIP_COUNT; }
+
+    int count = (int)currentLabels.size();
+    if (count <= 0) count = 1;
 
     float span = 360.0f / count;
     float cx = WHEEL_SIZE / 2.0f;
@@ -1203,12 +1328,12 @@ void RenderWheel(HWND hWnd) {
         float tx = cx + midR * cosf(midAngle);
         float ty = cy + midR * sinf(midAngle);
 
-        const wchar_t* glyph = GetItemGlyph(items[i]);
+        const wchar_t* glyph = GetItemGlyph(currentLabels[i].c_str());
         RectF iconRect(tx - 35.0f, ty - 22.0f, 70.0f, 20.0f);
         RectF textRect(tx - 48.0f, ty + 1.0f, 96.0f, 22.0f);
 
         g.DrawString(glyph, -1, &iconFont, iconRect, &strFormat, (i == g_hovered) ? &textBrush : &dimTextBrush);
-        g.DrawString(items[i], -1, &font, textRect, &strFormat, &textBrush);
+        g.DrawString(currentLabels[i].c_str(), -1, &font, textRect, &strFormat, &textBrush);
     }
 
     SolidBrush brandBrush(Color(255, 56, 189, 248)); // Sky Blue Accent
@@ -1274,12 +1399,13 @@ void UpdateHover(int mouseX, int mouseY) {
 
         int count = 5;
         if (g_state == STATE_MAIN) {
-            count = 5; // PAGE0, PAGE1, PAGE2 semuanya 5 item
+            count = (g_mainPage == 0) ? (int)g_page0Items.size() : (int)g_page1Items.size();
         } else if (g_state == STATE_FORMAT) {
             count = FORMAT_COUNT;
         } else if (g_state == STATE_SCREENSHOT) {
             count = SNIP_COUNT;
         }
+        if (count <= 0) count = 1;
 
         float span = 360.0f / count;
         g_hovered = (int)(angle / span);
@@ -1304,6 +1430,202 @@ void DismissWheel(HWND hWnd) {
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 }
 
+// ==============================================================================
+// GUI WINDOW PENGATURAN (SETTINGS DASHBOARD)
+// ==============================================================================
+#define IDC_TAB_PAGES     3001
+#define IDC_LIST_ITEMS    3002
+#define IDC_EDIT_LABEL    3003
+#define IDC_EDIT_TARGET   3004
+#define IDC_BTN_ADD       3005
+#define IDC_BTN_DELETE    3006
+#define IDC_BTN_SAVE      3007
+#define IDC_BTN_DEFAULT   3008
+
+int g_selectedTab = 1; // Default ke Web Launcher (0: Media, 1: Web)
+HWND g_hTabCtrl = NULL;
+HWND g_hListCtrl = NULL;
+HWND g_hEditLabel = NULL;
+HWND g_hEditTarget = NULL;
+
+void RefreshSettingsList() {
+    if (!g_hListCtrl) return;
+    SendMessageW(g_hListCtrl, LB_RESETCONTENT, 0, 0);
+
+    const std::vector<WheelItem>& items = (g_selectedTab == 0) ? g_page0Items : g_page1Items;
+    for (size_t i = 0; i < items.size(); i++) {
+        WCHAR rowText[512];
+        swprintf(rowText, 512, L"[%d] %ls  ->  %ls", (int)(i + 1), items[i].label.c_str(), items[i].target.c_str());
+        SendMessageW(g_hListCtrl, LB_ADDSTRING, 0, (LPARAM)rowText);
+    }
+}
+
+LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        INITCOMMONCONTROLSEX icex = { sizeof(icex), ICC_TAB_CLASSES };
+        InitCommonControlsEx(&icex);
+
+        // Tab Control
+        g_hTabCtrl = CreateWindowExW(0, WC_TABCONTROLW, L"",
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            20, 15, 520, 30, hWnd, (HMENU)IDC_TAB_PAGES, GetModuleHandle(NULL), NULL);
+
+        TCITEMW tie = { 0 };
+        tie.mask = TCIF_TEXT;
+        tie.pszText = (LPWSTR)L"Media Tools (Page 0)";
+        TabCtrl_InsertItem(g_hTabCtrl, 0, &tie);
+        tie.pszText = (LPWSTR)L"Web Launcher (Page 1)";
+        TabCtrl_InsertItem(g_hTabCtrl, 1, &tie);
+        TabCtrl_SetCurSel(g_hTabCtrl, g_selectedTab);
+
+        // Listbox Items
+        CreateWindowExW(0, L"STATIC", L"Daftar Sektor Wheel (Maksimal 5 Sektor per Layer):",
+            WS_CHILD | WS_VISIBLE, 20, 55, 520, 18, hWnd, NULL, GetModuleHandle(NULL), NULL);
+
+        g_hListCtrl = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY,
+            20, 75, 520, 140, hWnd, (HMENU)IDC_LIST_ITEMS, GetModuleHandle(NULL), NULL);
+
+        // Inputs
+        CreateWindowExW(0, L"STATIC", L"Nama / Label:", WS_CHILD | WS_VISIBLE, 20, 230, 100, 18, hWnd, NULL, GetModuleHandle(NULL), NULL);
+        g_hEditLabel = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 120, 227, 420, 24, hWnd, (HMENU)IDC_EDIT_LABEL, GetModuleHandle(NULL), NULL);
+
+        CreateWindowExW(0, L"STATIC", L"URL / Target:", WS_CHILD | WS_VISIBLE, 20, 265, 100, 18, hWnd, NULL, GetModuleHandle(NULL), NULL);
+        g_hEditTarget = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 120, 262, 420, 24, hWnd, (HMENU)IDC_EDIT_TARGET, GetModuleHandle(NULL), NULL);
+
+        // Buttons
+        CreateWindowExW(0, L"BUTTON", L"+ Tambah / Update", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            120, 300, 140, 30, hWnd, (HMENU)IDC_BTN_ADD, GetModuleHandle(NULL), NULL);
+
+        CreateWindowExW(0, L"BUTTON", L"- Hapus Sektor", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            270, 300, 120, 30, hWnd, (HMENU)IDC_BTN_DELETE, GetModuleHandle(NULL), NULL);
+
+        CreateWindowExW(0, L"BUTTON", L"Reset Default", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            400, 300, 140, 30, hWnd, (HMENU)IDC_BTN_DEFAULT, GetModuleHandle(NULL), NULL);
+
+        CreateWindowExW(0, L"BUTTON", L"Simpan & Terapkan", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+            380, 350, 160, 34, hWnd, (HMENU)IDC_BTN_SAVE, GetModuleHandle(NULL), NULL);
+
+        RefreshSettingsList();
+        return 0;
+    }
+    case WM_NOTIFY: {
+        NMHDR* pnm = (NMHDR*)lParam;
+        if (pnm->idFrom == IDC_TAB_PAGES && pnm->code == TCN_SELCHANGE) {
+            g_selectedTab = TabCtrl_GetCurSel(g_hTabCtrl);
+            RefreshSettingsList();
+            SetWindowTextW(g_hEditLabel, L"");
+            SetWindowTextW(g_hEditTarget, L"");
+        }
+        return 0;
+    }
+    case WM_COMMAND: {
+        int id = LOWORD(wParam);
+        if (id == IDC_LIST_ITEMS && HIWORD(wParam) == LBN_SELCHANGE) {
+            int sel = (int)SendMessageW(g_hListCtrl, LB_GETCURSEL, 0, 0);
+            if (sel != LB_ERR) {
+                const std::vector<WheelItem>& items = (g_selectedTab == 0) ? g_page0Items : g_page1Items;
+                if (sel < (int)items.size()) {
+                    SetWindowTextW(g_hEditLabel, items[sel].label.c_str());
+                    SetWindowTextW(g_hEditTarget, items[sel].target.c_str());
+                }
+            }
+        } else if (id == IDC_BTN_ADD) {
+            WCHAR lbl[128], tgt[512];
+            GetWindowTextW(g_hEditLabel, lbl, 128);
+            GetWindowTextW(g_hEditTarget, tgt, 512);
+            if (wcslen(lbl) == 0) {
+                MessageBoxW(hWnd, L"Label / Nama tidak boleh kosong!", L"Perhatian", MB_OK | MB_ICONWARNING);
+                return 0;
+            }
+
+            std::vector<WheelItem>& items = (g_selectedTab == 0) ? g_page0Items : g_page1Items;
+            int sel = (int)SendMessageW(g_hListCtrl, LB_GETCURSEL, 0, 0);
+            if (sel != LB_ERR && sel < (int)items.size()) {
+                // Update item yang dipilih
+                items[sel].label = lbl;
+                items[sel].target = tgt;
+            } else {
+                // Tambah item baru jika belum 5
+                if (items.size() >= 5) {
+                    MessageBoxW(hWnd, L"Maksimal 5 sektor per layer wheel agar navigasi tetap akurat!", L"Batas Maksimum", MB_OK | MB_ICONWARNING);
+                    return 0;
+                }
+                items.push_back({ lbl, tgt });
+            }
+            RefreshSettingsList();
+        } else if (id == IDC_BTN_DELETE) {
+            std::vector<WheelItem>& items = (g_selectedTab == 0) ? g_page0Items : g_page1Items;
+            int sel = (int)SendMessageW(g_hListCtrl, LB_GETCURSEL, 0, 0);
+            if (sel != LB_ERR && sel < (int)items.size()) {
+                if (items.size() <= 2) {
+                    MessageBoxW(hWnd, L"Minimal harus ada 2 sektor per layer wheel!", L"Perhatian", MB_OK | MB_ICONWARNING);
+                    return 0;
+                }
+                items.erase(items.begin() + sel);
+                RefreshSettingsList();
+                SetWindowTextW(g_hEditLabel, L"");
+                SetWindowTextW(g_hEditTarget, L"");
+            }
+        } else if (id == IDC_BTN_DEFAULT) {
+            if (MessageBoxW(hWnd, L"Kembalikan sektor ke susunan bawaan default?", L"Konfirmasi", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                LoadDefaultWheelItems();
+                RefreshSettingsList();
+            }
+        } else if (id == IDC_BTN_SAVE) {
+            SaveWheelConfig();
+            ShowTrayBalloon(L"Pengaturan Tersimpan", L"Susunan wheel berhasil diperbarui!");
+            DestroyWindow(hWnd);
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        DestroyWindow(hWnd);
+        return 0;
+    case WM_DESTROY:
+        g_hWndSettings = NULL;
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+void OpenSettingsDialog() {
+    if (g_hWndSettings && IsWindow(g_hWndSettings)) {
+        SetForegroundWindow(g_hWndSettings);
+        return;
+    }
+
+    WNDCLASSEXW wc = { sizeof(wc) };
+    wc.lpfnWndProc = SettingsWndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = L"RadialSettingsWndClass";
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    RegisterClassExW(&wc);
+
+    int scrW = GetSystemMetrics(SM_CXSCREEN);
+    int scrH = GetSystemMetrics(SM_CYSCREEN);
+    int w = 575;
+    int h = 440;
+    int x = (scrW - w) / 2;
+    int y = (scrH - h) / 2;
+
+    g_hWndSettings = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        L"RadialSettingsWndClass",
+        L"Radial Tool Pro - Pengaturan Wheel",
+        WS_POPUPWINDOW | WS_CAPTION | WS_VISIBLE,
+        x, y, w, h,
+        NULL, NULL, GetModuleHandle(NULL), NULL
+    );
+
+    SetForegroundWindow(g_hWndSettings);
+}
+
 // Eksekusi pilihan sektor aktif (dipanggil saat mouse click atau trigger button release)
 void ConfirmSelection(HWND hWnd) {
     if (g_hovered == -2 || g_hovered == -1) {
@@ -1316,31 +1638,37 @@ void ConfirmSelection(HWND hWnd) {
     if (g_state == STATE_MAIN) {
         if (g_mainPage == 0) {
             // Page 0: Media & Files
-            if (selected == 0) { // Format Image
-                g_state = STATE_FORMAT;
-                g_hovered = -1;
-                RenderWheel(hWnd);
-            } else if (selected == 1) { // Image to PDF
-                DismissWheel(hWnd);
-                ExecutePdf();
-            } else if (selected == 2) { // Screenshot
-                g_state = STATE_SCREENSHOT;
-                g_hovered = -1;
-                RenderWheel(hWnd);
-            } else if (selected == 3) { // Compress
-                DismissWheel(hWnd);
-                ExecuteCompress();
-            } else if (selected == 4) { // PDF Split
-                DismissWheel(hWnd);
-                ShowTrayBalloon(L"PDF Split", L"Fitur PDF Split sedang dipersiapkan.");
+            if (selected >= 0 && selected < (int)g_page0Items.size()) {
+                std::wstring target = g_page0Items[selected].target;
+                if (target == L"action:format") {
+                    g_state = STATE_FORMAT;
+                    g_hovered = -1;
+                    RenderWheel(hWnd);
+                } else if (target == L"action:pdf") {
+                    DismissWheel(hWnd);
+                    ExecutePdf();
+                } else if (target == L"action:screenshot") {
+                    g_state = STATE_SCREENSHOT;
+                    g_hovered = -1;
+                    RenderWheel(hWnd);
+                } else if (target == L"action:compress") {
+                    DismissWheel(hWnd);
+                    ExecuteCompress();
+                } else if (target == L"action:split") {
+                    DismissWheel(hWnd);
+                    ShowTrayBalloon(L"PDF Split", L"Fitur PDF Split sedang dipersiapkan.");
+                } else if (target.rfind(L"http", 0) == 0) {
+                    DismissWheel(hWnd);
+                    ShellExecuteW(NULL, L"open", target.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                }
             }
         } else if (g_mainPage == 1) {
             // Page 1: Web Quick Launcher
-            if (selected >= 0 && selected < PAGE1_COUNT) {
+            if (selected >= 0 && selected < (int)g_page1Items.size()) {
                 DismissWheel(hWnd);
-                const wchar_t* targetUrl = PAGE1_URLS[selected];
-                ShellExecuteW(NULL, L"open", targetUrl, NULL, NULL, SW_SHOWNORMAL);
-                WriteLog(L"Web Launcher: Opening %ls", targetUrl);
+                std::wstring targetUrl = g_page1Items[selected].target;
+                ShellExecuteW(NULL, L"open", targetUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                WriteLog(L"Web Launcher: Opening %ls", targetUrl.c_str());
             }
         }
     } else if (g_state == STATE_FORMAT) {
@@ -1457,7 +1785,9 @@ LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             POINT pt;
             GetCursorPos(&pt);
             HMENU hMenu = CreatePopupMenu();
-            AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, L"Radial Tool v1.7 (Ultra-Light)");
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_SETTINGS, L"Pengaturan Wheel (Settings)");
+            AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, L"Radial Tool v1.8 (Settings Dashboard)");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
             AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
 
@@ -1468,6 +1798,8 @@ LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     } else if (msg == WM_COMMAND) {
         if (LOWORD(wParam) == ID_TRAY_EXIT) {
             PostQuitMessage(0);
+        } else if (LOWORD(wParam) == ID_TRAY_SETTINGS) {
+            OpenSettingsDialog();
         } else if (LOWORD(wParam) == ID_TRAY_ABOUT) {
             WCHAR aboutMsg[512];
             swprintf(aboutMsg, 512,
@@ -1491,6 +1823,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     GdiplusStartupInput gdiplusStartupInput;
     GdiplusStartup(&g_gdiplusToken, &gdiplusStartupInput, NULL);
 
+    LoadWheelConfig();
+
     WNDCLASSEXW tc = { sizeof(tc) };
     tc.lpfnWndProc = TrayWndProc;
     tc.hInstance = hInstance;
@@ -1506,7 +1840,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
     g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wcscpy(g_nid.szTip, L"Radial Tool v1.7");
+    wcscpy(g_nid.szTip, L"Radial Tool v1.8 (Hold-Aim-Release)");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 
     WNDCLASSEXW wc = { sizeof(wc) };

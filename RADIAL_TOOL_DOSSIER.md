@@ -44,7 +44,19 @@ Membangun aplikasi desktop Windows **native C++ (Win32 API)** berupa **Radial / 
 
 ## 3. RIWAYAT FITUR & HISTORI PEKERJAAN (YANG SUDAH BERHASIL)
 
-1. **Ultra-Lightweight Memory Optimization (v1.7)**:
+1. **Dashboard Pengaturan Desktop Native (Settings GUI Window) (v1.8)**:
+   - Akses via klik kanan Tray Icon -> **"Pengaturan Wheel (Settings)"**.
+   - GUI Desktop Native Win32 (`TabControl`, `ListBox`, `EditBox`, `Button`) tanpa browser/Electron.
+   - Fitur Pengaturan:
+     - Tab **Media Tools (Page 0)** dan Tab **Web Launcher (Page 1)**.
+     - Tambah sektor baru (`+ Tambah / Update`) dengan nama dan URL/target custom.
+     - Hapus sektor (`- Hapus Sektor`).
+     - Reset ke susunan bawaan (`Reset Default`).
+     - Simpan dan terapkan langsung (`Simpan & Terapkan`).
+     - Validasi batas ergonomis: Maksimal 5 sektor per layer wheel agar arah navigasi flick tetap presisi.
+   - Konfigurasi tersimpan otomatis di `%APPDATA%\RadialTool\config.ini`.
+   - Zero background overhead: Ketika jendela pengaturan ditutup, seluruh resource GUI di-destroy dan RAM langsung kembali ke **~2–5 MB** via `SetProcessWorkingSetSize`.
+2. **Ultra-Lightweight Memory Optimization (v1.7)**:
    - Menambahkan fungsi `DismissWheel(HWND hWnd)`:
      - Mengosongkan cache vektor file seleksi Explorer (`g_smartFiles.clear()` & `shrink_to_fit()`).
      - Mengembalikan alokasi memori proses ke level minimum dengan Windows API `SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1)`.
