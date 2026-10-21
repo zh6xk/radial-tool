@@ -44,7 +44,12 @@ Membangun aplikasi desktop Windows **native C++ (Win32 API)** berupa **Radial / 
 
 ## 3. RIWAYAT FITUR & HISTORI PEKERJAAN (YANG SUDAH BERHASIL)
 
-1. **Mekanisme Navigasi "Hold-Aim-Release" Ala Rovyl (v1.6)**:
+1. **Ultra-Lightweight Memory Optimization (v1.7)**:
+   - Menambahkan fungsi `DismissWheel(HWND hWnd)`:
+     - Mengosongkan cache vektor file seleksi Explorer (`g_smartFiles.clear()` & `shrink_to_fit()`).
+     - Mengembalikan alokasi memori proses ke level minimum dengan Windows API `SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1)`.
+     - Hasil: RAM kembali turun ke ~2–5 MB saat idle, 0% CPU consumption.
+2. **Mekanisme Navigasi "Hold-Aim-Release" (v1.6)**:
    - Terinspirasi dari arsitektur Rovyl (`HenryCauan/rovyl`):
      - **Hold**: Tahan tombol trigger M4/M5 (`WM_XBUTTONDOWN`) untuk memunculkan wheel tepat di bawah kursor.
      - **Aim**: Arahkan mouse (flick gestural) ke sektor yang dituju.

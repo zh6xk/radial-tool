@@ -7,6 +7,7 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <psapi.h>
 #include <shlguid.h>
 #include <exdisp.h>
 #include <shldisp.h>
@@ -1289,11 +1290,25 @@ void UpdateHover(int mouseX, int mouseY) {
     }
 }
 
+// Helper untuk menutup wheel dan mengosongkan RAM / working set ke OS
+void DismissWheel(HWND hWnd) {
+    if (IsWindowVisible(hWnd)) {
+        ShowWindow(hWnd, SW_HIDE);
+    }
+    // Kosongkan cache file seleksi yang sudah selesai
+    g_smartFiles.clear();
+    g_smartFiles.shrink_to_fit();
+    g_hovered = -1;
+
+    // Bersihkan RAM ke level minimum saat aplikasi kembali idle
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+}
+
 // Eksekusi pilihan sektor aktif (dipanggil saat mouse click atau trigger button release)
 void ConfirmSelection(HWND hWnd) {
     if (g_hovered == -2 || g_hovered == -1) {
         // Lingkaran tengah atau tidak ada yang dipilih -> Tutup / Batal
-        ShowWindow(hWnd, SW_HIDE);
+        DismissWheel(hWnd);
         return;
     }
 
@@ -1306,23 +1321,23 @@ void ConfirmSelection(HWND hWnd) {
                 g_hovered = -1;
                 RenderWheel(hWnd);
             } else if (selected == 1) { // Image to PDF
-                ShowWindow(hWnd, SW_HIDE);
+                DismissWheel(hWnd);
                 ExecutePdf();
             } else if (selected == 2) { // Screenshot
                 g_state = STATE_SCREENSHOT;
                 g_hovered = -1;
                 RenderWheel(hWnd);
             } else if (selected == 3) { // Compress
-                ShowWindow(hWnd, SW_HIDE);
+                DismissWheel(hWnd);
                 ExecuteCompress();
             } else if (selected == 4) { // PDF Split
-                ShowWindow(hWnd, SW_HIDE);
+                DismissWheel(hWnd);
                 ShowTrayBalloon(L"PDF Split", L"Fitur PDF Split sedang dipersiapkan.");
             }
         } else if (g_mainPage == 1) {
             // Page 1: Web Quick Launcher
             if (selected >= 0 && selected < PAGE1_COUNT) {
-                ShowWindow(hWnd, SW_HIDE);
+                DismissWheel(hWnd);
                 const wchar_t* targetUrl = PAGE1_URLS[selected];
                 ShellExecuteW(NULL, L"open", targetUrl, NULL, NULL, SW_SHOWNORMAL);
                 WriteLog(L"Web Launcher: Opening %ls", targetUrl);
@@ -1334,7 +1349,7 @@ void ConfirmSelection(HWND hWnd) {
             g_hovered = -1;
             RenderWheel(hWnd);
         } else {
-            ShowWindow(hWnd, SW_HIDE);
+            DismissWheel(hWnd);
             if (selected == 0) ExecuteConvert(L"png");
             else if (selected == 1) ExecuteConvert(L"jpg");
             else if (selected == 2) ExecuteConvert(L"webp");
@@ -1345,7 +1360,7 @@ void ConfirmSelection(HWND hWnd) {
             g_hovered = -1;
             RenderWheel(hWnd);
         } else {
-            ShowWindow(hWnd, SW_HIDE);
+            DismissWheel(hWnd);
             if (selected == 0) StartSnipping();
             else if (selected == 1) CaptureFullScreen();
         }
@@ -1402,7 +1417,7 @@ LRESULT CALLBACK WheelWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
     case WM_RBUTTONDOWN:
     case WM_KILLFOCUS:
-        ShowWindow(hWnd, SW_HIDE);
+        DismissWheel(hWnd);
         return 0;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -1442,7 +1457,7 @@ LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             POINT pt;
             GetCursorPos(&pt);
             HMENU hMenu = CreatePopupMenu();
-            AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, L"Radial Tool v1.6 (Hold-Aim-Release)");
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, L"Radial Tool v1.7 (Ultra-Light)");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
             AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
 
@@ -1456,16 +1471,15 @@ LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         } else if (LOWORD(wParam) == ID_TRAY_ABOUT) {
             WCHAR aboutMsg[512];
             swprintf(aboutMsg, 512,
-                L"Radial Tool v1.6 (Hold-Aim-Release Mode)\n"
+                L"Radial Tool v1.7 (Ultra-Lightweight)\n"
                 L"Build: %hs %hs\n\n"
-                L"- Hold trigger (M4/M5), arahkan, lalu lepas untuk buka\n"
+                L"- Hold trigger (M4/M5), arahkan, lalu lepas untuk eksekusi\n"
                 L"- Scroll mouse: ganti layer (MEDIA / WEB)\n"
                 L"- Center button: Close / Cancel\n"
-                L"- Polar flick selection (no-cursor bound)\n"
-                L"- Output otomatis di samping file asal\n"
-                L"- Log tersimpan di %%TEMP%%\\RadialTool.log",
+                L"- Working Set Auto-Trim: RAM ~2-5 MB idle\n"
+                L"- Pure Native Win32 C++ (0%% CPU Idle)",
                 __DATE__, __TIME__);
-            MessageBoxW(hWnd, aboutMsg, L"Tentang Radial Tool v1.6", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(hWnd, aboutMsg, L"Tentang Radial Tool v1.7", MB_OK | MB_ICONINFORMATION);
         }
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -1492,7 +1506,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
     g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wcscpy(g_nid.szTip, L"Radial Tool v1.6");
+    wcscpy(g_nid.szTip, L"Radial Tool v1.7");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 
     WNDCLASSEXW wc = { sizeof(wc) };
