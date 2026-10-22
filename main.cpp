@@ -1014,6 +1014,310 @@ void ExecutePdf() {
     ShowTrayBalloon(L"Image to PDF Selesai", balloonMsg);
 }
 
+// Fallback File Picker Dialog jika tidak ada PDF yang dipilih di Explorer
+bool PickPdfFile(WCHAR* outPathList, DWORD maxLen) {
+    OPENFILENAMEW ofn = { sizeof(ofn) };
+    ofn.lpstrFilter = L"PDF Documents (*.pdf)\0*.pdf\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = outPathList;
+    ofn.nMaxFile = maxLen;
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT;
+    ofn.lpstrTitle = L"Pilih File PDF untuk di-Split / Unmerge";
+    outPathList[0] = L'\0';
+    return GetOpenFileNameW(&ofn) == TRUE;
+}
+
+// Kumpulkan target file PDF dari Explorer atau dialog picker
+std::vector<std::wstring> GatherPdfTargets() {
+    std::vector<std::wstring> pdfTargets;
+    for (const auto& path : g_smartFiles) {
+        if (path.length() >= 4) {
+            std::wstring ext = path.substr(path.length() - 4);
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+            if (ext == L".pdf") {
+                pdfTargets.push_back(path);
+            }
+        }
+    }
+
+    if (pdfTargets.empty()) {
+        WCHAR fileBuf[8192];
+        if (!PickPdfFile(fileBuf, 8192)) return pdfTargets;
+
+        WCHAR* p = fileBuf;
+        std::wstring baseDir(p);
+        p += wcslen(p) + 1;
+
+        if (*p == L'\0') {
+            pdfTargets.push_back(baseDir);
+        } else {
+            while (*p) {
+                std::wstring fullPath = baseDir + L"\\" + p;
+                pdfTargets.push_back(fullPath);
+                p += wcslen(p) + 1;
+            }
+        }
+    }
+    return pdfTargets;
+}
+
+// Helper aman pencarian byte sequence (pengganti memmem yang portabel)
+const unsigned char* FindBytes(const unsigned char* hay, size_t hayLen, const void* needle, size_t needleLen) {
+    if (!hay || !needle || needleLen == 0 || hayLen < needleLen) return NULL;
+    const unsigned char* n = (const unsigned char*)needle;
+    for (size_t i = 0; i <= hayLen - needleLen; i++) {
+        if (hay[i] == n[0] && memcmp(hay + i, n, needleLen) == 0) {
+            return hay + i;
+        }
+    }
+    return NULL;
+}
+
+// Generate single-page PDF 1.4 murni untuk setiap halaman yang diekstrak
+bool WriteSinglePagePdf(const std::wstring& outPath, const unsigned char* pJpeg, size_t jpegSize, UINT w, UINT h) {
+    HANDLE hFile = CreateFileW(outPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    auto WriteRaw = [hFile](const void* pData, DWORD len) -> bool {
+        DWORD written = 0;
+        return WriteFile(hFile, pData, len, &written, NULL) && (written == len);
+    };
+
+    size_t currentOffset = 0;
+    auto AppendRaw = [&WriteRaw, &currentOffset](const void* pData, DWORD len) -> bool {
+        if (!WriteRaw(pData, len)) return false;
+        currentOffset += len;
+        return true;
+    };
+    auto AppendStr = [&AppendRaw](const std::string& str) -> bool {
+        return AppendRaw(str.data(), (DWORD)str.size());
+    };
+
+    AppendStr("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+    std::vector<size_t> xrefOffsets(6, 0);
+
+    double mediaW = w * 0.72; if (mediaW < 1.0) mediaW = 1.0;
+    double mediaH = h * 0.72; if (mediaH < 1.0) mediaH = 1.0;
+
+    // Obj 1: Catalog
+    xrefOffsets[1] = currentOffset;
+    AppendStr("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    // Obj 2: Pages
+    xrefOffsets[2] = currentOffset;
+    AppendStr("2 0 obj\n<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>\nendobj\n");
+
+    // Obj 3: Page
+    xrefOffsets[3] = currentOffset;
+    {
+        std::ostringstream ss;
+        ss.precision(2);
+        ss << std::fixed;
+        ss << "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 "
+           << mediaW << " " << mediaH
+           << " ] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>\nendobj\n";
+        AppendStr(ss.str());
+    }
+
+    // Obj 4: Contents
+    xrefOffsets[4] = currentOffset;
+    {
+        std::ostringstream streamContent;
+        streamContent.precision(2);
+        streamContent << std::fixed;
+        streamContent << "q " << mediaW << " 0 0 " << mediaH << " 0 0 cm /Im0 Do Q\n";
+        std::string sStream = streamContent.str();
+
+        std::ostringstream ss;
+        ss << "4 0 obj\n<< /Length " << sStream.size() << " >>\nstream\n"
+           << sStream << "endstream\nendobj\n";
+        AppendStr(ss.str());
+    }
+
+    // Obj 5: Image
+    xrefOffsets[5] = currentOffset;
+    {
+        std::ostringstream ss;
+        ss << "5 0 obj\n<< /Type /XObject /Subtype /Image /Width " << w
+           << " /Height " << h
+           << " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length "
+           << jpegSize << " >>\nstream\n";
+        AppendStr(ss.str());
+        AppendRaw(pJpeg, (DWORD)jpegSize);
+        AppendStr("\nendstream\nendobj\n");
+    }
+
+    // XRef
+    size_t xrefStart = currentOffset;
+    {
+        std::ostringstream ss;
+        ss << "xref\n0 6\n0000000000 65535 f \n";
+        for (int i = 1; i <= 5; i++) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%010zu 00000 n \n", xrefOffsets[i]);
+            ss << buf;
+        }
+        ss << "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n"
+           << xrefStart << "\n%%EOF\n";
+        AppendStr(ss.str());
+    }
+
+    CloseHandle(hFile);
+    return true;
+}
+
+// Engine PDF Split & Unmerge Halaman Gambar
+void ExecutePdfSplit() {
+    std::vector<std::wstring> pdfTargets = GatherPdfTargets();
+    if (pdfTargets.empty()) {
+        WriteLog(L"ExecutePdfSplit: targets empty, aborting.");
+        return;
+    }
+
+    int totalPagesExtracted = 0;
+
+    for (const auto& pdfPath : pdfTargets) {
+        WriteLog(L"ExecutePdfSplit: Processing %ls", pdfPath.c_str());
+
+        HANDLE hFile = CreateFileW(pdfPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile == INVALID_HANDLE_VALUE) {
+            WriteLog(L"  ExecutePdfSplit: Failed to open file, err=%lu", GetLastError());
+            continue;
+        }
+
+        LARGE_INTEGER liSize;
+        if (!GetFileSizeEx(hFile, &liSize) || liSize.QuadPart <= 0 || liSize.QuadPart > 500 * 1024 * 1024) {
+            WriteLog(L"  ExecutePdfSplit: Invalid file size");
+            CloseHandle(hFile);
+            continue;
+        }
+
+        DWORD fileSize = (DWORD)liSize.QuadPart;
+        std::vector<unsigned char> buf(fileSize);
+        DWORD bytesRead = 0;
+        if (!ReadFile(hFile, buf.data(), fileSize, &bytesRead, NULL) || bytesRead != fileSize) {
+            WriteLog(L"  ExecutePdfSplit: ReadFile failed or incomplete");
+            CloseHandle(hFile);
+            continue;
+        }
+        CloseHandle(hFile);
+
+        WCHAR drive[_MAX_DRIVE] = { 0 }, dir[_MAX_DIR] = { 0 }, fname[_MAX_FNAME] = { 0 }, ext[_MAX_EXT] = { 0 };
+        _wsplitpath(pdfPath.c_str(), drive, dir, fname, ext);
+        std::wstring baseFolder = std::wstring(drive) + dir;
+
+        struct ExtractedImage {
+            std::vector<unsigned char> data;
+            UINT width;
+            UINT height;
+        };
+        std::vector<ExtractedImage> images;
+
+        size_t pos = 0;
+        const char* streamMarker = "stream";
+        size_t streamMarkerLen = 6;
+
+        while (pos + 3 < fileSize) {
+            const unsigned char* pStream = FindBytes(buf.data() + pos, fileSize - pos, streamMarker, streamMarkerLen);
+            if (!pStream) break;
+
+            size_t streamStart = (pStream - buf.data()) + streamMarkerLen;
+            while (streamStart < fileSize && (buf[streamStart] == '\r' || buf[streamStart] == '\n')) {
+                streamStart++;
+            }
+
+            // Periksa signature JPEG SOI (0xFF 0xD8 0xFF)
+            if (streamStart + 3 < fileSize &&
+                buf[streamStart] == 0xFF &&
+                buf[streamStart + 1] == 0xD8 &&
+                buf[streamStart + 2] == 0xFF) {
+
+                const char* endMarker = "endstream";
+                const unsigned char* pEnd = FindBytes(buf.data() + streamStart, fileSize - streamStart, endMarker, 9);
+                if (pEnd) {
+                    size_t rawEnd = pEnd - buf.data();
+                    while (rawEnd > streamStart && (buf[rawEnd - 1] == '\r' || buf[rawEnd - 1] == '\n')) {
+                        rawEnd--;
+                    }
+
+                    // Cari JPEG EOI marker 0xFF 0xD9
+                    if (rawEnd >= streamStart + 2 && buf[rawEnd - 2] == 0xFF && buf[rawEnd - 1] == 0xD9) {
+                        size_t imgLen = rawEnd - streamStart;
+                        if (imgLen > 100) {
+                            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, imgLen);
+                            if (hMem) {
+                                void* pLocked = GlobalLock(hMem);
+                                memcpy(pLocked, buf.data() + streamStart, imgLen);
+                                GlobalUnlock(hMem);
+
+                                IStream* pStreamObj = NULL;
+                                if (SUCCEEDED(CreateStreamOnHGlobal(hMem, TRUE, &pStreamObj)) && pStreamObj) {
+                                    Bitmap testBmp(pStreamObj);
+                                    if (testBmp.GetLastStatus() == Ok && testBmp.GetWidth() > 0 && testBmp.GetHeight() > 0) {
+                                        ExtractedImage img;
+                                        img.width = testBmp.GetWidth();
+                                        img.height = testBmp.GetHeight();
+                                        img.data.assign(buf.data() + streamStart, buf.data() + rawEnd);
+                                        images.push_back(img);
+                                        WriteLog(L"  ExecutePdfSplit: Valid JPEG extracted #%zu (%ux%u, %zu bytes)", images.size(), img.width, img.height, imgLen);
+                                    }
+                                    pStreamObj->Release();
+                                }
+                            }
+                        }
+                    }
+                    pos = pEnd - buf.data() + 9;
+                    continue;
+                }
+            }
+            pos = streamStart;
+        }
+
+        if (images.empty()) {
+            WriteLog(L"ExecutePdfSplit: No valid JPEG image pages found in %ls", pdfPath.c_str());
+            ShowTrayBalloon(L"PDF Split", L"Tidak ditemukan halaman gambar yang dapat di-unmerge pada file ini.");
+            continue;
+        }
+
+        // Simpan setiap halaman yang diekstrak sebagai .jpg dan .pdf di folder yang sama
+        for (size_t i = 0; i < images.size(); i++) {
+            WCHAR pageSuffix[64];
+            swprintf(pageSuffix, 64, L"-page-%02d", (int)(i + 1));
+
+            WCHAR outJpgPath[MAX_PATH];
+            MakeUniquePath(pdfPath.c_str(), pageSuffix, L"jpg", outJpgPath, MAX_PATH);
+
+            WCHAR outSinglePdfPath[MAX_PATH];
+            MakeUniquePath(pdfPath.c_str(), pageSuffix, L"pdf", outSinglePdfPath, MAX_PATH);
+
+            // 1. Tulis file JPG
+            HANDLE hJpg = CreateFileW(outJpgPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hJpg != INVALID_HANDLE_VALUE) {
+                DWORD written = 0;
+                WriteFile(hJpg, images[i].data.data(), (DWORD)images[i].data.size(), &written, NULL);
+                CloseHandle(hJpg);
+                SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW, outJpgPath, NULL);
+                WriteLog(L"  ExecutePdfSplit: Created %ls", outJpgPath);
+            }
+
+            // 2. Tulis file single-page PDF
+            if (WriteSinglePagePdf(outSinglePdfPath, images[i].data.data(), images[i].data.size(), images[i].width, images[i].height)) {
+                SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW, outSinglePdfPath, NULL);
+                WriteLog(L"  ExecutePdfSplit: Created %ls", outSinglePdfPath);
+            }
+
+            totalPagesExtracted++;
+        }
+
+        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, baseFolder.c_str(), NULL);
+    }
+
+    if (totalPagesExtracted > 0) {
+        WCHAR balloonMsg[256];
+        swprintf(balloonMsg, 256, L"Berhasil memecah %d halaman menjadi file JPG & PDF terpisah!", totalPagesExtracted);
+        ShowTrayBalloon(L"PDF Split Selesai", balloonMsg);
+    }
+}
+
 // Copy text string to Windows Clipboard
 void CopyToClipboard(const wchar_t* text) {
     if (!text || !OpenClipboard(NULL)) return;
@@ -1656,7 +1960,7 @@ void ConfirmSelection(HWND hWnd) {
                     ExecuteCompress();
                 } else if (target == L"action:split") {
                     DismissWheel(hWnd);
-                    ShowTrayBalloon(L"PDF Split", L"Fitur PDF Split sedang dipersiapkan.");
+                    ExecutePdfSplit();
                 } else if (target.rfind(L"http", 0) == 0) {
                     DismissWheel(hWnd);
                     ShellExecuteW(NULL, L"open", target.c_str(), NULL, NULL, SW_SHOWNORMAL);
@@ -1787,7 +2091,7 @@ LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             HMENU hMenu = CreatePopupMenu();
             AppendMenuW(hMenu, MF_STRING, ID_TRAY_SETTINGS, L"Pengaturan Wheel (Settings)");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, L"Radial Tool v1.8 (Settings Dashboard)");
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, L"Radial Tool v1.9 (PDF Split Engine)");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
             AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit");
 
@@ -1803,15 +2107,15 @@ LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         } else if (LOWORD(wParam) == ID_TRAY_ABOUT) {
             WCHAR aboutMsg[512];
             swprintf(aboutMsg, 512,
-                L"Radial Tool v1.7 (Ultra-Lightweight)\n"
+                L"Radial Tool v1.9 (PDF Split Engine)\n"
                 L"Build: %hs %hs\n\n"
-                L"- Hold trigger (M4/M5), arahkan, lalu lepas untuk eksekusi\n"
-                L"- Scroll mouse: ganti layer (MEDIA / WEB)\n"
-                L"- Center button: Close / Cancel\n"
-                L"- Working Set Auto-Trim: RAM ~2-5 MB idle\n"
-                L"- Pure Native Win32 C++ (0%% CPU Idle)",
+                L"- PDF Split / Unmerge: Ekstrak halaman PDF jadi JPG & single PDF\n"
+                L"- Settings GUI: Kustomisasi sektor wheel via Desktop GUI\n"
+                L"- Hold-Aim-Release: M4/M5 gesture flick selection\n"
+                L"- Scroll mouse: Ganti layer (MEDIA / WEB)\n"
+                L"- Auto-Trim RAM: ~2-5 MB idle, 0%% CPU",
                 __DATE__, __TIME__);
-            MessageBoxW(hWnd, aboutMsg, L"Tentang Radial Tool v1.7", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(hWnd, aboutMsg, L"Tentang Radial Tool v1.9", MB_OK | MB_ICONINFORMATION);
         }
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -1840,7 +2144,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
     g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wcscpy(g_nid.szTip, L"Radial Tool v1.8 (Hold-Aim-Release)");
+    wcscpy(g_nid.szTip, L"Radial Tool v1.9 (Hold-Aim-Release)");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 
     WNDCLASSEXW wc = { sizeof(wc) };
