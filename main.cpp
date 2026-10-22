@@ -1278,31 +1278,29 @@ void ExecutePdfSplit() {
             continue;
         }
 
-        // Simpan setiap halaman yang diekstrak sebagai .jpg dan .pdf di folder yang sama
+        // Bersihkan suffix -merged pada nama file jika ada agar kembali ke nama asli
+        std::wstring cleanName = fname;
+        if (cleanName.length() >= 7 && cleanName.rfind(L"-merged") == cleanName.length() - 7) {
+            cleanName = cleanName.substr(0, cleanName.length() - 7);
+        }
+        std::wstring cleanSourcePath = baseFolder + cleanName + L".pdf";
+
+        // Simpan setiap halaman yang diekstrak sebagai file gambar (.jpg murni, tanpa menduplikasi file .pdf)
         for (size_t i = 0; i < images.size(); i++) {
             WCHAR pageSuffix[64];
             swprintf(pageSuffix, 64, L"-page-%02d", (int)(i + 1));
 
             WCHAR outJpgPath[MAX_PATH];
-            MakeUniquePath(pdfPath.c_str(), pageSuffix, L"jpg", outJpgPath, MAX_PATH);
+            MakeUniquePath(cleanSourcePath.c_str(), pageSuffix, L"jpg", outJpgPath, MAX_PATH);
 
-            WCHAR outSinglePdfPath[MAX_PATH];
-            MakeUniquePath(pdfPath.c_str(), pageSuffix, L"pdf", outSinglePdfPath, MAX_PATH);
-
-            // 1. Tulis file JPG
+            // Tulis file gambar JPG murni
             HANDLE hJpg = CreateFileW(outJpgPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
             if (hJpg != INVALID_HANDLE_VALUE) {
                 DWORD written = 0;
                 WriteFile(hJpg, images[i].data.data(), (DWORD)images[i].data.size(), &written, NULL);
                 CloseHandle(hJpg);
                 SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW, outJpgPath, NULL);
-                WriteLog(L"  ExecutePdfSplit: Created %ls", outJpgPath);
-            }
-
-            // 2. Tulis file single-page PDF
-            if (WriteSinglePagePdf(outSinglePdfPath, images[i].data.data(), images[i].data.size(), images[i].width, images[i].height)) {
-                SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW, outSinglePdfPath, NULL);
-                WriteLog(L"  ExecutePdfSplit: Created %ls", outSinglePdfPath);
+                WriteLog(L"  ExecutePdfSplit: Created image %ls", outJpgPath);
             }
 
             totalPagesExtracted++;
@@ -1313,8 +1311,8 @@ void ExecutePdfSplit() {
 
     if (totalPagesExtracted > 0) {
         WCHAR balloonMsg[256];
-        swprintf(balloonMsg, 256, L"Berhasil memecah %d halaman menjadi file JPG & PDF terpisah!", totalPagesExtracted);
-        ShowTrayBalloon(L"PDF Split Selesai", balloonMsg);
+        swprintf(balloonMsg, 256, L"Berhasil meng-unmerge %d gambar dari PDF!", totalPagesExtracted);
+        ShowTrayBalloon(L"PDF Unmerge Selesai", balloonMsg);
     }
 }
 

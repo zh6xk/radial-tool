@@ -45,13 +45,13 @@ Membangun aplikasi desktop Windows **native C++ (Win32 API)** berupa **Radial / 
 ## 3. RIWAYAT FITUR & HISTORI PEKERJAAN (YANG SUDAH BERHASIL)
 
 1. **PDF Split & Unmerge Engine (v1.9)**:
-   - Fitur "PDF Split" di layer Media aktif secara penuh.
+   - Fitur "PDF Split" di layer Media aktif secara penuh sebagai alat Unmerge sejati.
    - Smart PDF Target Detection via Explorer (`g_smartFiles`) dengan fallback dialog `PickPdfFile`.
    - Native Stream Extraction: Memindai struktur stream PDF secara binary mencari stream gambar (JPEG `0xFF 0xD8 0xFF ... 0xFF 0xD9`).
    - GDI+ Stream Validation: Memverifikasi keabsahan tiap gambar melalui `CreateStreamOnHGlobal` + `Gdiplus::Bitmap` sebelum diekstrak.
-   - Dual Output Otomatis:
-     - Menyimpan tiap halaman menjadi file JPEG mandiri (`<nama>-page-01.jpg`, `<nama>-page-02.jpg`).
-     - Sekaligus mengemas tiap halaman menjadi PDF 1 halaman terpisah (`<nama>-page-01.pdf`, `<nama>-page-02.pdf`).
+   - Clean Unmerge Output:
+     - Hanya mengekstrak dan menyimpan file gambar asli (`.jpg`) tanpa menduplikasi file `.pdf` tambahan agar folder tetap rapi.
+     - Otomatis membersihkan suffix `-merged` pada nama file asal (contoh: `foto-merged.pdf` kembali menjadi `foto-page-01.jpg`, `foto-page-02.jpg`).
    - Notifikasi Balon Tray `ShowTrayBalloon` dan refresh instan di folder Explorer via `SHChangeNotify(SHCNE_CREATE)` & `SHCNE_UPDATEDIR`.
 2. **Dashboard Pengaturan Desktop Native (Settings GUI Window) (v1.8)**:
    - Akses via klik kanan Tray Icon -> **"Pengaturan Wheel (Settings)"**.
